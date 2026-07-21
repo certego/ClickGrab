@@ -40,6 +40,7 @@ from urllib.parse import urlparse
 from dotenv import load_dotenv
 from OTXv2 import OTXv2
 from OTXv2 import IndicatorTypes
+from websockets import proxy
 
 from .models import (
     ClickGrabConfig, AnalysisResult, AnalysisReport, 
@@ -154,7 +155,7 @@ def _read_text_capped(response, max_bytes: int = 3_000_000, deadline: Optional[f
         return raw.decode("utf-8", errors="ignore")
 
 
-def get_html_content(url: str, max_redirects: int = 2) -> Optional[str]:
+def get_html_content(url: str, proxies: Dict[str, str], max_redirects: int = 2) -> Optional[str]:
     """Fetch HTML content from a URL.
     
     Args:
@@ -191,7 +192,7 @@ def get_html_content(url: str, max_redirects: int = 2) -> Optional[str]:
             # trickles bytes forever can't freeze a scan (slowloris-style C2).
             response = session.get(
                 url, headers=headers, timeout=(5, 15),
-                allow_redirects=True, verify=False, stream=True,
+                allow_redirects=True, verify=False, stream=True, proxies=proxies
             )
             response.raise_for_status()
 
@@ -680,7 +681,7 @@ def download_otx_data(limit: Optional[int] = None, tags: Optional[List[str]] = N
         return []
 
 
-def fetch_and_analyze_external_js(base_url: str, html_content: str) -> List[str]:
+def fetch_and_analyze_external_js(base_url: str, html_content: str, proxies) -> List[str]:
     """Fetch external JavaScript files and analyze them for obfuscation.
     
     This ensures we don't claim "heavy obfuscation" without actually
@@ -728,7 +729,8 @@ def fetch_and_analyze_external_js(base_url: str, html_content: str) -> List[str]
                     timeout=(4, 6),
                     verify=False,
                     stream=True,
-                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+                    proxies=proxies,
                 )
                 response.raise_for_status()
 
@@ -760,7 +762,7 @@ def fetch_and_analyze_external_js(base_url: str, html_content: str) -> List[str]
     return results
 
 
-def analyze_url(url: str) -> Optional[AnalysisResult]:
+def analyze_url(url: str, proxies: Dict[str, str] = None) -> Optional[AnalysisResult]:
     """Analyze a URL for malicious content and return results as a Pydantic model.
     
     Args:
@@ -785,7 +787,7 @@ def analyze_url(url: str) -> Optional[AnalysisResult]:
     )
     
     # Get HTML content
-    html_content = get_html_content(url)
+    html_content = get_html_content(url, proxies=proxies)
     if not html_content:
         logger.error(f"Failed to retrieve content from {url}")
         # Still return a result with empty content and failed status
@@ -847,7 +849,7 @@ def analyze_url(url: str) -> Optional[AnalysisResult]:
     result.FakeBrowserUpdate = extractors.extract_fake_browser_update(html_content)
 
     # Also check external JS files for obfuscation
-    external_js_obfuscation = fetch_and_analyze_external_js(url, html_content)
+    external_js_obfuscation = fetch_and_analyze_external_js(url, html_content, proxies)
     if external_js_obfuscation:
         result.HeavyObfuscation.extend(external_js_obfuscation)
 
