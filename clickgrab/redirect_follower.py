@@ -8,7 +8,7 @@ from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup
 
-import extractors
+from . import extractors
 from models import RedirectFollow
 
 logger = logging.getLogger("clickgrab.redirects")

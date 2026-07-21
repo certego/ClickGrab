@@ -45,7 +45,7 @@ from models import (
     ClickGrabConfig, AnalysisResult, AnalysisReport, 
     AnalysisVerdict, ReportFormat, CommandRiskLevel
 )
-import extractors
+from . import extractors
 from redirect_follower import collect_redirects
 from models import JavaScriptRedirectChain
 
