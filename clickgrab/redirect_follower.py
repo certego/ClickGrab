@@ -9,7 +9,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from . import extractors
-from models import RedirectFollow
+from .models import RedirectFollow
 
 logger = logging.getLogger("clickgrab.redirects")
 

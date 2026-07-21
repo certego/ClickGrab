@@ -41,13 +41,13 @@ from dotenv import load_dotenv
 from OTXv2 import OTXv2
 from OTXv2 import IndicatorTypes
 
-from models import (
+from .models import (
     ClickGrabConfig, AnalysisResult, AnalysisReport, 
     AnalysisVerdict, ReportFormat, CommandRiskLevel
 )
 from . import extractors
-from redirect_follower import collect_redirects
-from models import JavaScriptRedirectChain
+from .redirect_follower import collect_redirects
+from .models import JavaScriptRedirectChain
 
 DEFAULT_CLICKFIX_GIST_ID = "9f563dfb78a06fad5db794f33ba93a3f"
 DEFAULT_CLICKFIX_GIST_FILENAME = "clickfix_domains.txt"

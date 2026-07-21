@@ -10,7 +10,7 @@ except ImportError:
     from enum import Enum
     class StrEnum(str, Enum):
         pass
-from models import (
+from .models import (
     Base64Result, 
     PowerShellDownload, 
     SuspiciousCommand,
