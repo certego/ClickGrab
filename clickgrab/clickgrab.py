@@ -40,7 +40,6 @@ from urllib.parse import urlparse
 from dotenv import load_dotenv
 from OTXv2 import OTXv2
 from OTXv2 import IndicatorTypes
-from websockets import proxy
 
 from .models import (
     ClickGrabConfig, AnalysisResult, AnalysisReport, 
