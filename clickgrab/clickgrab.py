@@ -42,7 +42,7 @@ from OTXv2 import OTXv2
 from OTXv2 import IndicatorTypes
 
 from .models import (
-    ClickGrabConfig, AnalysisResult, AnalysisReport, 
+    ClickGrabConfig, AnalysisResult, AnalysisReport,
     AnalysisVerdict, ReportFormat, CommandRiskLevel
 )
 from . import extractors
@@ -802,6 +802,7 @@ def analyze_url(url: str, proxies: Dict[str, str] = None) -> Optional[AnalysisRe
     result.Base64Strings = extractors.extract_base64_strings(html_content)
     result.URLs = extractors.extract_urls(html_content)
     result.PowerShellCommands = extractors.extract_powershell_commands(html_content)
+    result.MshtaCommands = extractors.extract_mshta_commands(html_content)
     result.EncodedPowerShell = extractors.extract_encoded_powershell(html_content)
     result.IPAddresses = extractors.extract_ip_addresses(html_content)
     result.ClipboardCommands = extractors.extract_clipboard_commands(html_content)
@@ -1010,7 +1011,18 @@ def generate_html_report(results: List[AnalysisResult], config: ClickGrabConfig)
             for cmd in result.PowerShellCommands:
                 html_content += f"<li><pre>{cmd}</pre></li>"
             html_content += "</ul></div>"
-        
+
+        # Mshta Commands
+        if result.MshtaCommands:
+            html_content += f"""
+                <div class="indicator">
+                    <p class="indicator-title">Mshta Commands ({len(result.MshtaCommands)})</p>
+                    <ul>
+                """
+            for cmd in result.MshtaCommands:
+                html_content += f"<li><pre>{cmd}</pre></li>"
+            html_content += "</ul></div>"
+
         # Encoded PowerShell
         if result.EncodedPowerShell:
             html_content += f"""
@@ -1513,6 +1525,7 @@ def generate_json_report(results: List[AnalysisResult], config: ClickGrabConfig)
         summary={
             "suspicious_sites": sum(1 for result in results if result.Verdict == AnalysisVerdict.SUSPICIOUS.value),
             "powershell_commands": sum(len(result.PowerShellCommands) for result in results),
+            "mshta_commands": sum(len(result.MshtaCommands) for result in results),
             "base64_strings": sum(len(result.Base64Strings) for result in results),
             "clipboard_manipulation": sum(len(result.ClipboardManipulation) for result in results),
             "captcha_elements": sum(len(result.CaptchaElements) for result in results),
@@ -1600,6 +1613,7 @@ def generate_csv_report(results: List[AnalysisResult], config: ClickGrabConfig) 
         "Total Indicators",
         "Base64Strings",
         "PowerShellCommands",
+        "MshtaCommands",
         "EncodedPowerShell",
         "PowerShellDownloads",
         "ClipboardManipulation",
@@ -1640,6 +1654,7 @@ def generate_csv_report(results: List[AnalysisResult], config: ClickGrabConfig) 
                 result.TotalIndicators,
                 len(result.Base64Strings),
                 len(result.PowerShellCommands),
+                len(result.MshtaCommands),
                 len(result.EncodedPowerShell),
                 len(result.PowerShellDownloads),
                 len(result.ClipboardManipulation),
@@ -1727,6 +1742,7 @@ def generate_threat_intel_exports(results: List[AnalysisResult], config: ClickGr
     cradle_fields = [
         ("PowerShellDownloads", "PowerShell Download"),
         ("PowerShellCommands", "PowerShell Command"),
+        ("MshtaCommands", "Mshta Command"),
         ("EncodedPowerShell", "Encoded PowerShell"),
         ("MacOSTerminalCommands", "macOS Terminal Command"),
         ("DNSClickFix", "DNS ClickFix"),
@@ -1806,6 +1822,7 @@ def generate_threat_intel_exports(results: List[AnalysisResult], config: ClickGr
             "ClipboardManipulation": len(r.ClipboardManipulation),
             "PowerShellDownloads": len(r.PowerShellDownloads),
             "PowerShellCommands": len(r.PowerShellCommands),
+            "MshtaCommands": len(r.MshtaCommands),
             "EncodedPowerShell": len(r.EncodedPowerShell),
             "MacOSTerminalCommands": len(r.MacOSTerminalCommands),
             "DNSClickFix": len(r.DNSClickFix),
@@ -2045,10 +2062,10 @@ def main():
                 clipboard_count = sum(len(r.ClipboardCommands) + len(r.ClipboardManipulation) for r in results)
                 cradle_count = sum(
                     len(r.PowerShellDownloads) + len(r.PowerShellCommands) +
-                    len(r.EncodedPowerShell) + len(r.MacOSTerminalCommands) +
-                    len(r.DNSClickFix) + len(r.WindowsTerminalClickFix) +
-                    len(r.WebDAVClickFix) + len(r.FingerExeAbuse) +
-                    len(r.WinHttpVBScript)
+                    len(r.MshtaCommands) + len(r.EncodedPowerShell) +
+                    len(r.MacOSTerminalCommands) + len(r.DNSClickFix) +
+                    len(r.WindowsTerminalClickFix) + len(r.WebDAVClickFix) +
+                    len(r.FingerExeAbuse) + len(r.WinHttpVBScript)
                     for r in results
                 )
                 lure_count = sum(

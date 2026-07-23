@@ -20,6 +20,14 @@ from .models import (
     CommonPatterns
 )
 from enum import auto
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+
+logger = logging.getLogger("clickgrab")
 
 
 class PatternCategory(StrEnum):
@@ -259,6 +267,29 @@ def extract_powershell_commands(text: str) -> List[str]:
                 except re.error:
                     continue
     
+    return results
+
+
+def extract_mshta_commands(text: str) -> List[str]:
+    """Extract full lines containing mshta execution commands."""
+    # Matches any full line containing 'mshta' or 'mshta.exe'
+    pattern = r'^.*?\bmshta(?:\.exe)?\b.*$'
+    results = []
+
+    # re.MULTILINE allows '^' and '$' to match the start and end of each line
+    for match in re.finditer(pattern, text, re.IGNORECASE | re.MULTILINE):
+        cmd = match.group().strip()
+        if cmd and cmd not in results:
+            results.append(cmd)
+
+    # Check inside Base64 decoded strings (if present)
+    for b64_obj in extract_base64_strings(text):
+        decoded = getattr(b64_obj, 'Decoded', '')
+        for match in re.finditer(pattern, decoded, re.IGNORECASE | re.MULTILINE):
+            cmd = match.group().strip()
+            if cmd and cmd not in results:
+                results.append(cmd)
+
     return results
 
 

@@ -1418,6 +1418,7 @@ class AnalysisResult(BaseModel):
     Base64Strings: List[Base64Result] = Field(default_factory=list, description="Base64 encoded strings found")
     URLs: List[str] = Field(default_factory=list, description="URLs found in the content")
     PowerShellCommands: List[str] = Field(default_factory=list, description="PowerShell commands found")
+    MshtaCommands: List[str] = Field(default_factory=list, description="mshta commands found")
     EncodedPowerShell: List[EncodedPowerShellResult] = Field(default_factory=list, description="Encoded PowerShell commands found")
     IPAddresses: List[str] = Field(default_factory=list, description="IP addresses found in the content")
     ClipboardCommands: List[str] = Field(default_factory=list, description="Commands related to clipboard manipulation")
@@ -1480,6 +1481,7 @@ class AnalysisResult(BaseModel):
             len(self.Base64Strings) +
             len(self.URLs) +
             len(self.PowerShellCommands) +
+            len(self.MshtaCommands) +
             len(self.EncodedPowerShell) +
             len(self.IPAddresses) +
             len(self.ClipboardCommands) +
@@ -1531,6 +1533,10 @@ class AnalysisResult(BaseModel):
         ]
         
         if filtered_powershell_commands:
+            return AnalysisVerdict.SUSPICIOUS.value
+
+        # Check for Mshta commands
+        if self.MshtaCommands:
             return AnalysisVerdict.SUSPICIOUS.value
         
         # Check for suspicious Base64 strings
@@ -1680,6 +1686,9 @@ class AnalysisResult(BaseModel):
                 
         # Add points for PowerShell commands
         score += len(self.PowerShellCommands) * 10
+
+        # Add points for Mshta commands
+        score += len(self.MshtaCommands) * 10
         
         # Add points for encoded PowerShell
         for encoded_ps in self.EncodedPowerShell:
