@@ -740,7 +740,17 @@ def extract_suspicious_commands(html_content: str) -> List[SuspiciousCommand]:
             Source=encoded.FullMatch[:50] + "..." if len(encoded.FullMatch) > 50 else encoded.FullMatch,
             RiskLevel=encoded.RiskLevel
         ))
-    
+
+    # Mstha commands
+    mstha_commands = extract_mshta_commands(html_content)
+    for cmd in mstha_commands:
+        results.append(SuspiciousCommand(
+            Command=cmd,
+            CommandType=CommandType.MSHTA.value,
+            Source="HTML/JavaScript",
+            RiskLevel=CommandRiskLevel.HIGH.value
+        ))
+
     # Command execution in JavaScript
     js_cmd_patterns = CommonPatterns.JS_COMMAND_EXECUTION_PATTERNS
     
