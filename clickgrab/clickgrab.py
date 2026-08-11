@@ -24,30 +24,35 @@ License: Apache-2.0
 """
 
 import argparse
-import os
-import sys
-import re
+import csv
+import hashlib
 import json
 import logging
-import hashlib
-import requests
-from datetime import datetime, timedelta
-from typing import List, Dict, Optional, Any, Union, Tuple
-import csv
+import os
 import pathlib
-from bs4 import BeautifulSoup
+import sys
+from datetime import datetime
+from pathlib import Path
+from typing import List, Dict, Optional, Tuple
 from urllib.parse import urlparse
-from dotenv import load_dotenv
-from OTXv2 import OTXv2
-from OTXv2 import IndicatorTypes
 
-from .models import (
-    ClickGrabConfig, AnalysisResult, AnalysisReport,
-    AnalysisVerdict, ReportFormat, CommandRiskLevel
-)
-from . import extractors
-from .redirect_follower import collect_redirects
-from .models import JavaScriptRedirectChain
+import requests
+from dotenv import load_dotenv
+
+try:
+    from . import extractors
+    from .models import (
+        ClickGrabConfig, AnalysisResult, AnalysisReport,
+        AnalysisVerdict, ReportFormat, CommandRiskLevel, JavaScriptRedirectChain
+    )
+    from .redirect_follower import collect_redirects
+except ImportError:
+    import extractors
+    from models import (
+        ClickGrabConfig, AnalysisResult, AnalysisReport,
+        AnalysisVerdict, ReportFormat, CommandRiskLevel, JavaScriptRedirectChain
+    )
+    from redirect_follower import collect_redirects
 
 DEFAULT_CLICKFIX_GIST_ID = "9f563dfb78a06fad5db794f33ba93a3f"
 DEFAULT_CLICKFIX_GIST_FILENAME = "clickfix_domains.txt"
@@ -60,21 +65,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger("clickgrab")
 
+BASE_DIR = Path(__file__).resolve().parent.parent
 
-def load_environment() -> Optional[str]:
-    """Load environment variables from config/env or .env file.
+def load_environment() -> None:
+    """Load environment variables from config/env or env file.
     
     Returns:
         Optional[str]: OTX API key if found, None otherwise
     """
     # Try loading from config/env first
-    if os.path.exists('config/env'):
-        load_dotenv('config/env')
+    config_env_path = BASE_DIR / "config" / "env"
+    if os.path.exists(config_env_path):
+        load_dotenv(config_env_path)
     else:
-        # Fall back to .env in root directory
+        # Fall back to env in root directory
         load_dotenv()
-
-    return os.getenv('OTX_API_KEY')
 
 
 def sanitize_url(url: str) -> str:
@@ -176,9 +181,19 @@ def get_html_content(url: str, proxies: Dict[str, str], max_redirects: int = 2) 
         parsed_url = urlparse(url)
         if any(cdn in parsed_url.netloc.lower() for cdn in suspicious_cdns):
             logger.warning(f"URL {url} is from a CDN known to host malware. Proceeding with analysis...")
-        
+
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Sec-CH-UA': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+            'Sec-CH-UA-Mobile': '?0',
+            'Sec-CH-UA-Platform': '"Windows"',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Upgrade-Insecure-Requests': '1',
         }
         
         # Create a session to handle redirects
@@ -599,9 +614,9 @@ def download_otx_data(limit: Optional[int] = None, tags: Optional[List[str]] = N
         logger.info(f"Downloading URL data from AlienVault OTX (past {days} days)...")
         
         # Get API key from environment
-        api_key = load_environment()
+        api_key = os.getenv('OTX_API_KEY')
         if not api_key:
-            logger.error("OTX API key not found. Please set OTX_API_KEY in config/env or .env file")
+            logger.error("OTX API key not found. Please set OTX_API_KEY in config/env or env file")
             return []
 
         if tags is None:
@@ -761,7 +776,7 @@ def fetch_and_analyze_external_js(base_url: str, html_content: str, proxies) -> 
     return results
 
 
-def analyze_url(url: str, proxies: Dict[str, str] = None) -> Optional[AnalysisResult]:
+def analyze_url(url: str, proxies: Dict[str, str] | None = None) -> Optional[AnalysisResult]:
     """Analyze a URL for malicious content and return results as a Pydantic model.
     
     Args:
@@ -784,7 +799,7 @@ def analyze_url(url: str, proxies: Dict[str, str] = None) -> Optional[AnalysisRe
         URL=url,
         RawHTML=""
     )
-    
+
     # Get HTML content
     html_content = get_html_content(url, proxies=proxies)
     if not html_content:
@@ -797,12 +812,13 @@ def analyze_url(url: str, proxies: Dict[str, str] = None) -> Optional[AnalysisRe
     
     # Update with actual content
     result.RawHTML = html_content
-    
+
     # Extract various indicators using optimized extractor functions
     result.Base64Strings = extractors.extract_base64_strings(html_content)
     result.URLs = extractors.extract_urls(html_content)
     result.PowerShellCommands = extractors.extract_powershell_commands(html_content)
     result.MshtaCommands = extractors.extract_mshta_commands(html_content)
+    result.ConhostCommands = extractors.extract_conhost_commands(html_content)
     result.EncodedPowerShell = extractors.extract_encoded_powershell(html_content)
     result.IPAddresses = extractors.extract_ip_addresses(html_content)
     result.ClipboardCommands = extractors.extract_clipboard_commands(html_content)
@@ -811,15 +827,16 @@ def analyze_url(url: str, proxies: Dict[str, str] = None) -> Optional[AnalysisRe
     result.PowerShellDownloads = extractors.extract_powershell_downloads(html_content)
     result.CaptchaElements = extractors.extract_captcha_elements(html_content)
     result.ObfuscatedJavaScript = extractors.extract_obfuscated_javascript(html_content)
+    result.EtherhidingJavaScript = extractors.extract_etherhiding_payload(html_content, proxies=proxies)
     result.SuspiciousCommands = extractors.extract_suspicious_commands(html_content)
-    
+
     # Add new extractions
     result.BotDetection = extractors.extract_bot_detection(html_content)
     result.SessionHijacking = extractors.extract_session_hijacking(html_content)
     result.ProxyEvasion = extractors.extract_proxy_evasion(html_content)
     result.JavaScriptRedirects = extractors.extract_js_redirects(html_content)
     result.ParkingPageLoaders = extractors.extract_parking_page_loaders(html_content)
-    
+
     # Add November 2025 threat extractions (fake video conferencing, ClickFix instructions, steganography)
     result.FakeVideoConferencing = extractors.extract_fake_video_conferencing(html_content)
     result.ClickFixInstructions = extractors.extract_clickfix_instructions(html_content)
@@ -827,7 +844,7 @@ def analyze_url(url: str, proxies: Dict[str, str] = None) -> Optional[AnalysisRe
     result.FakeWindowsUpdate = extractors.extract_fake_windows_update(html_content)
     result.FakeCloudflare = extractors.extract_fake_cloudflare(html_content)
     result.HeavyObfuscation = extractors.extract_heavy_obfuscation(html_content)
-    
+
     # Add December 2025 threat extractions (macOS attacks, AI chat links, ErrTraffic toolkit)
     result.MacOSTerminalCommands = extractors.extract_macos_terminal_commands(html_content)
     result.SharedAIChatLinks = extractors.extract_shared_ai_chat_links(html_content)
@@ -855,7 +872,7 @@ def analyze_url(url: str, proxies: Dict[str, str] = None) -> Optional[AnalysisRe
 
     # Collect redirect chains (inline + external + meta) and follow them
     try:
-        redirect_findings = collect_redirects(result.URL, html_content)
+        redirect_findings = collect_redirects(result.URL, html_content, proxies)
         if redirect_findings:
             result.RedirectFollows = redirect_findings
             for finding in redirect_findings:
@@ -870,9 +887,9 @@ def analyze_url(url: str, proxies: Dict[str, str] = None) -> Optional[AnalysisRe
                     )
     except Exception as redirect_exc:
         logger.debug(f"Failed to collect redirects for {result.URL}: {redirect_exc}")
-    
+
     logger.debug(f"Analysis complete for {url}. Found {result.TotalIndicators} indicators.")
-    
+
     if result.TotalIndicators > 0:
         threat_score = result.ThreatScore
         logger.debug(f"Threat score: {threat_score}")
@@ -880,7 +897,7 @@ def analyze_url(url: str, proxies: Dict[str, str] = None) -> Optional[AnalysisRe
             logger.warning(f"HIGH THREAT DETECTED in {url} - Score: {threat_score}")
         elif threat_score >= 30:
             logger.warning(f"MEDIUM THREAT DETECTED in {url} - Score: {threat_score}")
-    
+
     return result
 
 
@@ -1023,6 +1040,16 @@ def generate_html_report(results: List[AnalysisResult], config: ClickGrabConfig)
                 html_content += f"<li><pre>{cmd}</pre></li>"
             html_content += "</ul></div>"
 
+        if result.ConhostCommands:
+            html_content += f"""
+                <div class="indicator">
+                    <p class="indicator-title">Conhost Commands ({len(result.ConhostCommands)})</p>
+                    <ul>
+                """
+            for cmd in result.ConhostCommands:
+                html_content += f"<li><pre>{cmd}</pre></li>"
+            html_content += "</ul></div>"
+
         # Encoded PowerShell
         if result.EncodedPowerShell:
             html_content += f"""
@@ -1112,6 +1139,56 @@ def generate_html_report(results: List[AnalysisResult], config: ClickGrabConfig)
             if len(result.ObfuscatedJavaScript) > max_items:
                 html_content += f"<li><em>... and {len(result.ObfuscatedJavaScript) - max_items} more entries (see JSON for full data)</em></li>"
             html_content += "</ul></div>"
+
+            # EtherHiding JavaScript (truncated for HTML display)
+            if result.EtherhidingJavaScript:
+                max_items = 2
+                max_length = 1000
+                displayed_items = result.EtherhidingJavaScript[:max_items]
+
+                html_content += f"""
+                <div class="indicator">
+                    <p class="indicator-title">EtherHiding JavaScript (showing {len(displayed_items)} of {len(result.EtherhidingJavaScript)})</p>
+                    <ul>
+                """
+                for js in displayed_items:
+                    if isinstance(js, dict):
+                        html_content += "<li><ul class='etherhiding-details'>"
+
+                        if 'stage' in js and js['stage'] is not None:
+                            html_content += f"<li><strong>Stage:</strong> {js['stage']}</li>"
+                        if 'malicious_url' in js and js['malicious_url']:
+                            html_content += f"<li><strong>Malicious URL:</strong> {js['malicious_url']}</li>"
+                        if 'smart_contract' in js and js['smart_contract']:
+                            html_content += f"<li><strong>Smart Contract:</strong> <code>{js['smart_contract']}</code></li>"
+                        if 'rpc' in js and js['rpc']:
+                            html_content += f"<li><strong>RPC:</strong> {js['rpc']}</li>"
+                        if 'selector' in js and js['selector']:
+                            html_content += f"<li><strong>Selector:</strong> <code>{js['selector']}</code></li>"
+
+                        # Code/Payload fields with truncation
+                        if 'payload' in js and js['payload']:
+                            payload_str = str(js['payload'])
+                            payload_truncated = payload_str[:max_length] + "... [truncated]" if len(
+                                payload_str) > max_length else payload_str
+                            html_content += f"<li><strong>Payload:</strong> <pre>{payload_truncated}</pre></li>"
+
+                        if 'decoded_payload' in js and js['decoded_payload']:
+                            decoded_str = str(js['decoded_payload'])
+                            decoded_truncated = decoded_str[:max_length] + "... [truncated]" if len(
+                                decoded_str) > max_length else decoded_str
+                            html_content += f"<li><strong>Decoded Payload:</strong> <pre>{decoded_truncated}</pre></li>"
+
+                        html_content += "</ul></li>"
+                    else:
+                        js_truncated = str(js)[:max_length] + "... [truncated]" if len(str(js)) > max_length else str(
+                            js)
+                        html_content += f"<li><pre>{js_truncated}</pre></li>"
+
+                if len(result.EtherhidingJavaScript) > max_items:
+                    html_content += f"<li><em>... and {len(result.EtherhidingJavaScript) - max_items} more entries (see JSON for full data)</em></li>"
+
+                html_content += "</ul></div>"
         
         # Suspicious Commands
         if result.SuspiciousCommands:
@@ -1526,6 +1603,7 @@ def generate_json_report(results: List[AnalysisResult], config: ClickGrabConfig)
             "suspicious_sites": sum(1 for result in results if result.Verdict == AnalysisVerdict.SUSPICIOUS.value),
             "powershell_commands": sum(len(result.PowerShellCommands) for result in results),
             "mshta_commands": sum(len(result.MshtaCommands) for result in results),
+            "conhost_commands": sum(len(result.ConhostCommands) for result in results),
             "base64_strings": sum(len(result.Base64Strings) for result in results),
             "clipboard_manipulation": sum(len(result.ClipboardManipulation) for result in results),
             "captcha_elements": sum(len(result.CaptchaElements) for result in results),
@@ -1533,6 +1611,7 @@ def generate_json_report(results: List[AnalysisResult], config: ClickGrabConfig)
             "encoded_powershell": sum(len(result.EncodedPowerShell) for result in results),
             "powershell_downloads": sum(len(result.PowerShellDownloads) for result in results),
             "obfuscated_javascript": sum(len(result.ObfuscatedJavaScript) for result in results),
+            "etherhiding_javascript": sum(len(result.EtherhidingJavaScript) for result in results),
             "suspicious_commands": sum(len(result.SuspiciousCommands) for result in results),
             "suspicious_keywords": sum(len(result.SuspiciousKeywords) for result in results),
             "ip_addresses": sum(len(result.IPAddresses) for result in results),
@@ -1614,12 +1693,14 @@ def generate_csv_report(results: List[AnalysisResult], config: ClickGrabConfig) 
         "Base64Strings",
         "PowerShellCommands",
         "MshtaCommands",
+        "ConhostCommands",
         "EncodedPowerShell",
         "PowerShellDownloads",
         "ClipboardManipulation",
         "ClipboardCommands",
         "CaptchaElements",
         "ObfuscatedJavaScript",
+        "EtherhidingJavaScript",
         "SuspiciousCommands",
         "SuspiciousKeywords",
         "IP Addresses",
@@ -1655,12 +1736,14 @@ def generate_csv_report(results: List[AnalysisResult], config: ClickGrabConfig) 
                 len(result.Base64Strings),
                 len(result.PowerShellCommands),
                 len(result.MshtaCommands),
+                len(result.ConhostCommands),
                 len(result.EncodedPowerShell),
                 len(result.PowerShellDownloads),
                 len(result.ClipboardManipulation),
                 len(result.ClipboardCommands),
                 len(result.CaptchaElements),
                 len(result.ObfuscatedJavaScript),
+                len(result.EtherhidingJavaScript),
                 len(result.SuspiciousCommands),
                 len(result.SuspiciousKeywords),
                 len(result.IPAddresses),
@@ -1743,6 +1826,7 @@ def generate_threat_intel_exports(results: List[AnalysisResult], config: ClickGr
         ("PowerShellDownloads", "PowerShell Download"),
         ("PowerShellCommands", "PowerShell Command"),
         ("MshtaCommands", "Mshta Command"),
+        ("ConhostCommands", "Conhost Command"),
         ("EncodedPowerShell", "Encoded PowerShell"),
         ("MacOSTerminalCommands", "macOS Terminal Command"),
         ("DNSClickFix", "DNS ClickFix"),
@@ -1823,6 +1907,7 @@ def generate_threat_intel_exports(results: List[AnalysisResult], config: ClickGr
             "PowerShellDownloads": len(r.PowerShellDownloads),
             "PowerShellCommands": len(r.PowerShellCommands),
             "MshtaCommands": len(r.MshtaCommands),
+            "ConhostCommands": len(r.ConhostCommands),
             "EncodedPowerShell": len(r.EncodedPowerShell),
             "MacOSTerminalCommands": len(r.MacOSTerminalCommands),
             "DNSClickFix": len(r.DNSClickFix),
@@ -1917,6 +2002,12 @@ def main():
     """Main entry point for ClickGrab."""
     # Parse arguments
     config = parse_arguments()
+    load_environment()
+    proxies = {
+        "http": os.getenv("HTTP_PROXY"),
+        "https": os.getenv("HTTPS_PROXY")
+    }
+    logger.info(f"Proxies: {proxies}")
     
     # Configure logging level
     if config.debug:
@@ -2007,7 +2098,7 @@ def main():
                 results.append(result)
         else:
             # Single URL analysis
-            result = analyze_url(config.analyze)
+            result = analyze_url(config.analyze, proxies=proxies)
             results.append(result)
     else:
         # No URL or file specified, and not in download mode
@@ -2062,10 +2153,11 @@ def main():
                 clipboard_count = sum(len(r.ClipboardCommands) + len(r.ClipboardManipulation) for r in results)
                 cradle_count = sum(
                     len(r.PowerShellDownloads) + len(r.PowerShellCommands) +
-                    len(r.MshtaCommands) + len(r.EncodedPowerShell) +
-                    len(r.MacOSTerminalCommands) + len(r.DNSClickFix) +
-                    len(r.WindowsTerminalClickFix) + len(r.WebDAVClickFix) +
-                    len(r.FingerExeAbuse) + len(r.WinHttpVBScript)
+                    len(r.MshtaCommands) + len(r.ConhostCommands) +
+                    len(r.EncodedPowerShell) + len(r.MacOSTerminalCommands) +
+                    len(r.DNSClickFix) + len(r.WindowsTerminalClickFix) +
+                    len(r.WebDAVClickFix) + len(r.FingerExeAbuse) +
+                    len(r.WinHttpVBScript)
                     for r in results
                 )
                 lure_count = sum(

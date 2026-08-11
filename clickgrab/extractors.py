@@ -1,6 +1,8 @@
-import re
 import base64
-from typing import List, Dict, Set, Any, Tuple, Union, Optional
+import json
+import re
+from typing import List, Dict, Any
+from typing import Set, Tuple, Union
 
 # Python 3.11+ compatibility for StrEnum
 try:
@@ -10,16 +12,47 @@ except ImportError:
     from enum import Enum
     class StrEnum(str, Enum):
         pass
-from .models import (
-    Base64Result, 
-    PowerShellDownload, 
-    SuspiciousCommand,
-    EncodedPowerShellResult,
-    CommandType,
-    CommandRiskLevel,
-    CommonPatterns
-)
-from enum import auto
+try:
+    from .models import (
+        Base64Result,
+        PowerShellDownload,
+        SuspiciousCommand,
+        EncodedPowerShellResult,
+        CommandType,
+        CommandRiskLevel,
+        CommonPatterns,
+    )
+    from .blockchain_utils import (
+        extract_etherhiding_js_patterns,
+        fetch_payload,
+        decode_payload,
+        extract_valid_smart_contract,
+        extract_function_selectors,
+        pick_correct_selector,
+        smart_deobfuscate,
+        extract_malicious_url_and_check_next_stage,
+    )
+except ImportError:
+    from models import (
+        Base64Result,
+        PowerShellDownload,
+        SuspiciousCommand,
+        EncodedPowerShellResult,
+        CommandType,
+        CommandRiskLevel,
+        CommonPatterns,
+    )
+    from blockchain_utils import (
+        extract_etherhiding_js_patterns,
+        fetch_payload,
+        decode_payload,
+        extract_valid_smart_contract,
+        extract_function_selectors,
+        pick_correct_selector,
+        smart_deobfuscate,
+        extract_malicious_url_and_check_next_stage,
+    )
+
 import logging
 
 logging.basicConfig(
@@ -100,52 +133,60 @@ def mark_match_positions(match: re.Match, matched_positions: Set[int]) -> None:
 
 def extract_base64_strings(text: str) -> List[Base64Result]:
     """Extract Base64 strings and attempt to decode them."""
-    # Standard Base64 pattern
-    base64_pattern = r'(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{4})'
-    
-    # Find potential Base64 strings (at least 16 chars to avoid false positives)
     potential_b64s = []
-    
-    # Look for standard Base64 strings
+
+    # Target Data URIs (e.g., src="data:text/javascript;base64,CmFz...")
+    data_uri_pattern = r'data:[^;]+;base64,([A-Za-z0-9+/=\s]+)'
+    for match in re.finditer(data_uri_pattern, text, re.IGNORECASE):
+        # Clean out newlines or whitespace embedded in the Base64 payload
+        b64_clean = re.sub(r'\s+', '', match.group(1))
+        if len(b64_clean) >= 16:
+            potential_b64s.append(b64_clean)
+
+    # Standard Base64 pattern sweep
+    base64_pattern = r'(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{4})'
+
     for match in re.finditer(r'[A-Za-z0-9+/=]{16,}', text):
         b64 = match.group()
-        # Must match the Base64 pattern
         if re.fullmatch(base64_pattern, b64):
             potential_b64s.append(b64)
-    
+
     # Look specifically for PowerShell EncodedCommand parameters
     encoded_cmd_pattern = r'-EncodedCommand\s+([A-Za-z0-9+/=]+)'
     encoded_commands = re.finditer(encoded_cmd_pattern, text, re.IGNORECASE)
     for match in encoded_commands:
         potential_b64s.append(match.group(1))
-    
+
     # Look for shorter Base64 commands that might be part of a PowerShell script
     short_encoded_pattern = r'(?:-e|-enc|-encode|-encodedcommand)\s+([A-Za-z0-9+/=]{8,})'
     short_encoded = re.finditer(short_encoded_pattern, text, re.IGNORECASE)
     for match in short_encoded:
         potential_b64s.append(match.group(1))
-    
+
     # Look for Base64 strings in FromBase64String calls
     base64_calls = re.finditer(r'FromBase64String\(\s*["\']([A-Za-z0-9+/=]+)["\']', text, re.IGNORECASE)
     for match in base64_calls:
         potential_b64s.append(match.group(1))
-    
+
     nested_base64 = re.finditer(r'GetString\(\s*[^)]*FromBase64String\(\s*["\']([A-Za-z0-9+/=]+)["\']', text, re.IGNORECASE)
     for match in nested_base64:
         potential_b64s.append(match.group(1))
-    
+
     complex_nested = re.finditer(r'iex\(\s*[^)]*GetString\(\s*[^)]*FromBase64String\(\s*["\']([A-Za-z0-9+/=]+)["\']', text, re.IGNORECASE)
     for match in complex_nested:
         potential_b64s.append(match.group(1))
-    
+
     truncated_base64 = re.finditer(r'["\']([A-Za-z0-9+/]{4,}\.\.\.)["\']', text, re.IGNORECASE)
     for match in truncated_base64:
         potential_b64s.append(match.group(1))
-    
+
     abbreviated_base64 = re.finditer(r'FromBase64String\(\s*["\'](aHR0[A-Za-z0-9+/]*(?:\.\.\.)?)["\']', text, re.IGNORECASE)
     for match in abbreviated_base64:
         potential_b64s.append(match.group(1))
-    
+
+    # Deduplicate extracted base64 candidates
+    potential_b64s = list(dict.fromkeys(potential_b64s))
+
     results = []
     for b64 in potential_b64s:
         try:
@@ -155,19 +196,28 @@ def extract_base64_strings(text: str) -> List[Base64Result]:
                     Decoded="[TRUNCATED BASE64]"
                 ))
                 continue
-                
-            decoded = base64.b64decode(b64).decode('utf-8', errors='ignore')
-            
+
+            # Ensure correct padding for decoding
+            missing_padding = len(b64) % 4
+            if missing_padding:
+                b64_padded = b64 + '=' * (4 - missing_padding)
+            else:
+                b64_padded = b64
+
+            decoded = base64.b64decode(b64_padded).decode('utf-8', errors='ignore')
+
             if re.search(r'[A-Za-z0-9]{4,}', decoded) and \
                not re.match(r'^[\x00-\x1F\x7F-\xFF]+$', decoded):
                 results.append(Base64Result(
                     Base64=b64,
                     Decoded=decoded
                 ))
-        except:
+        except Exception:
             # If UTF-8 decode fails, try UTF-16LE (common for PowerShell)
             try:
-                decoded = base64.b64decode(b64).decode('utf-16le', errors='ignore')
+                missing_padding = len(b64) % 4
+                b64_padded = b64 + '=' * (4 - missing_padding) if missing_padding else b64
+                decoded = base64.b64decode(b64_padded).decode('utf-16le', errors='ignore')
                 if re.search(r'[A-Za-z0-9]{4,}', decoded):
                     results.append(Base64Result(
                         Base64=b64,
@@ -175,7 +225,7 @@ def extract_base64_strings(text: str) -> List[Base64Result]:
                     ))
             except:
                 continue
-    
+
     return results
 
 
@@ -269,29 +319,58 @@ def extract_powershell_commands(text: str) -> List[str]:
     
     return results
 
-
 def extract_mshta_commands(text: str) -> List[str]:
-    """Extract full lines containing mshta execution commands."""
-    # Matches any full line containing 'mshta' or 'mshta.exe'
+    """Extract mshta execution commands from text."""
     pattern = r'^.*?\bmshta(?:\.exe)?\b.*$'
     results = []
 
-    # re.MULTILINE allows '^' and '$' to match the start and end of each line
-    for match in re.finditer(pattern, text, re.IGNORECASE | re.MULTILINE):
-        cmd = match.group().strip()
-        if cmd and cmd not in results:
-            results.append(cmd)
+    # Combine primary text with all decoded Base64 strings into one list
+    buffers = [text] + [
+        getattr(b64, 'Decoded', '')
+        for b64 in extract_base64_strings(text)
+        if getattr(b64, 'Decoded', '')
+    ]
 
-    # Check inside Base64 decoded strings (if present)
-    for b64_obj in extract_base64_strings(text):
-        decoded = getattr(b64_obj, 'Decoded', '')
-        for match in re.finditer(pattern, decoded, re.IGNORECASE | re.MULTILINE):
+    for buffer in buffers:
+        for match in re.finditer(pattern, buffer, re.IGNORECASE | re.MULTILINE):
             cmd = match.group().strip()
+            if len(cmd) > 300:
+                cmd = extract_match_with_context(match, buffer, context_length=100)
             if cmd and cmd not in results:
                 results.append(cmd)
 
     return results
 
+
+def extract_conhost_commands(text: str) -> List[str]:
+    """Extract conhost execution commands from text."""
+    results = []
+
+    # Combine primary text with all decoded Base64 strings into one list
+    buffers = [text] + [
+        getattr(b64, 'Decoded', '')
+        for b64 in extract_base64_strings(text)
+        if getattr(b64, 'Decoded', '')
+    ]
+
+    for buffer in buffers:
+        matched_positions = set()
+        for pattern in CommonPatterns.CONHOST_EXECUTION_PATTERNS:
+            try:
+                for match in re.finditer(pattern, buffer, re.IGNORECASE | re.MULTILINE):
+                    if check_match_overlap(match, matched_positions):
+                        continue
+                    mark_match_positions(match, matched_positions)
+                    cmd = match.group().strip()
+                    if len(cmd) > 300:
+                        cmd = extract_match_with_context(match, buffer, context_length=100)
+
+                    if cmd and cmd not in results:
+                        results.append(cmd)
+            except re.error:
+                continue
+
+    return results
 
 def extract_ip_addresses(text: str) -> List[str]:
     """Extract IP addresses from text."""
@@ -535,7 +614,7 @@ def extract_encoded_powershell(text: str) -> List[EncodedPowerShellResult]:
     return results
 
 
-def extract_obfuscated_javascript(text: str) -> List[Dict[str, Any]]:
+def extract_obfuscated_javascript(text: str, show_entire_js: bool = False) -> List[Dict[str, Any]]:
     """Extract obfuscated JavaScript snippets from text."""
     obfuscation_patterns = CommonPatterns.JS_OBFUSCATION_PATTERNS
     
@@ -571,11 +650,16 @@ def extract_obfuscated_javascript(text: str) -> List[Dict[str, Any]]:
         
         obfuscation_score = 0
         obfuscation_indicators = []
+
+        # EtherHiding/ClickFix loader signature detection
+        is_etherhiding, obfuscation_score, indicator = extract_etherhiding_js_patterns(script_content)
+        if is_etherhiding:
+            obfuscation_indicators.append(indicator)
         
         for pattern in obfuscation_patterns:
             pattern_matches = list(re.finditer(pattern, script_content, re.IGNORECASE))
             if pattern_matches:
-                pattern_examples = [match.group(0)[:50] + '...' if len(match.group(0)) > 50 else match.group(0) 
+                pattern_examples = [match.group(0)[:50] + '...' if len(match.group(0)) > 50 else match.group(0)
                                   for match in pattern_matches[:2]]  # Get up to 2 examples
                 obfuscation_indicators.append({
                     'pattern': pattern,
@@ -611,9 +695,10 @@ def extract_obfuscated_javascript(text: str) -> List[Dict[str, Any]]:
                         break
                 
                 # If we have obfuscation score > 2 or we have hex variables, consider it obfuscated
-                if obfuscation_score > 2 or has_hex_vars:
+                if obfuscation_score > 2 or has_hex_vars or is_etherhiding:
                     results.append({
-                        'script': script_content[:150] + '...' if len(script_content) > 150 else script_content,
+                        'is_etherhiding': is_etherhiding,
+                        'script': script_content[:150] + '...' if len(script_content) > 150 and not show_entire_js else script_content,
                         'indicators': obfuscation_indicators,
                         'score': obfuscation_score,
                         'position': script_tag.start()
@@ -637,7 +722,12 @@ def extract_obfuscated_javascript(text: str) -> List[Dict[str, Any]]:
                 
             obfuscation_score = 0
             obfuscation_indicators = []
-            
+
+            # EtherHiding check for inline JS attributes
+            is_etherhiding, obfuscation_score, indicator = extract_etherhiding_js_patterns(js_content)
+            if is_etherhiding:
+                obfuscation_indicators.append(indicator)
+
             # Check for obfuscation patterns
             for obf_pattern in obfuscation_patterns:
                 pattern_matches = list(re.finditer(obf_pattern, js_content, re.IGNORECASE))
@@ -664,7 +754,7 @@ def extract_obfuscated_javascript(text: str) -> List[Dict[str, Any]]:
                     break
             
             # If it has a significant obfuscation score or hex variables, consider it obfuscated
-            if obfuscation_score > 1 or has_hex_vars:
+            if obfuscation_score > 1 or has_hex_vars or is_etherhiding:
                 # Check if it's just PowerShell in a string
                 is_powershell_in_string = False
                 for ps_pattern in powershell_in_string_patterns:
@@ -675,13 +765,116 @@ def extract_obfuscated_javascript(text: str) -> List[Dict[str, Any]]:
                 
                 if not is_powershell_in_string:
                     results.append({
-                        'script': js_content[:150] + '...' if len(js_content) > 150 else js_content,
+                        'is_etherhiding': is_etherhiding,
+                        'script': js_content[:150] + '...' if len(js_content) > 150 and not show_entire_js else js_content,
                         'indicators': obfuscation_indicators,
                         'score': obfuscation_score,
                         'position': match.start()
                     })
     
     return results
+
+# TODO: add deobfuscation (synchrony already implemented but it needs npm install -g deobfuscator)
+def extract_etherhiding_payload(text: str, proxies: Dict[str, str]) -> List[Dict[str, Any]]:
+    """
+    Extract EtherHiding patterns (blockchain infos like smart contract, function selector, and RPC URL).
+    Then contact the RPC to obtain the payload and decode it using helper utilities.
+    """
+    etherhiding_scripts = [script.Decoded for script in extract_base64_strings(text) if script.ContainsEtherhiding]
+
+    if not etherhiding_scripts:
+        js_scripts = extract_obfuscated_javascript(text, show_entire_js=True)
+        etherhiding_scripts = [item.get("script") for item in js_scripts if item.get("is_etherhiding")]
+
+    if not etherhiding_scripts:
+        logger.info("No obfuscated JavaScript snippets identified for EtherHiding extraction.")
+
+    # Comprehensive RPC matchers (full URL or domain/path constructs)
+    rpc_pattern = r'https?://[a-zA-Z0-9.-]+\.(?:publicnode\.(?:app|com)|nodies\.app|binance\.org|bnbchain\.org|drpc\.org|quiknode\.pro|polygon\.community|alchemy\.com|infura\.io|onfinality\.io)(?::\d+)?(?:/[^\s"\']*)?'
+    domain_rpc_pattern = r'(?:[a-zA-Z0-9-]+\.)+(?:publicnode\.(?:app|com)|nodies\.app|binance\.org|bnbchain\.org|drpc\.org|quiknode\.pro|polygon\.community|alchemy\.com|infura\.io|onfinality\.io)(?::\d+)?(?:/[^\s"\']*)?'
+
+    blockchain_infos = []
+    # Extract smart contract from the entire HTML
+    final_contract = extract_valid_smart_contract(text)
+    if not final_contract:
+        logger.warning("No valid smart contract address identified in script.")
+        # return []
+
+    for raw_script in etherhiding_scripts:
+        extracted_rpc = None
+        extracted_selectors = None
+        logger.info("Extracting smart contract and RPC info from target payload...")
+        # Iterating 2 times in case we found a multi-stage Etherhiding (stops at the 2nd stage)
+        for i in range(1, 3):
+            logger.info("-------------------------------------------------")
+            logger.info(f"Etherhiding stage: {i}")
+            logger.info(f"Raw script: {raw_script}")
+            # Deobfuscate via Synchrony (returns pure JS string)
+            # cleaned_script = smart_deobfuscate(raw_script)
+
+            # Extract RPC Endpoint
+            found_rpcs = re.findall(rpc_pattern, raw_script)
+            if not found_rpcs:
+                # Domain-only fallback reconstructs missing https:// prefixes
+                found_domains = re.findall(domain_rpc_pattern, raw_script)
+                if found_domains:
+                    found_rpcs = [f"https://{found_domains[0]}"]
+                elif blockchain_infos and i > 1:
+                    found_rpcs = list(blockchain_infos[-1]["rpc"])
+                else:
+                    break
+
+            # Extract Smart contract address
+            # If I'm at the 1st iteration (1st stage), then blockchain info is empty and final_contract could have been already extracted in the entire HTML (above).
+            # If not, enter here and check if you can extract the address from the JS script.
+            # If I'm at the 2nd iteration (2nd stage), hence blockchain_info is populated: enter here and check if in the 1st stage payload (raw_script)
+            # there's a new smart contract, otherwise use the previously extracted one.
+            if not final_contract or i > 1:
+                final_contract = extract_valid_smart_contract(raw_script)
+
+                if not final_contract and blockchain_infos:
+                    final_contract = list(blockchain_infos[-1]["smart_contract"])
+
+            # If no smart contract extracted at this point, there's no etherhiding or I cannot detect it...
+            if not final_contract:
+                logger.warning("No valid smart contract address identified in script. Skipping...")
+                continue
+
+            # Extract EVM Function Selector
+            # At the 2nd stage, use the previously extracted selector.
+            if i == 1:
+                extracted_selectors = extract_function_selectors(raw_script)
+                final_selector = pick_correct_selector(extracted_selectors)
+                if not final_selector:
+                    logger.warning(f"Could not resolve function selector for contract {final_contract}")
+                    continue
+
+            logger.info(
+                f"Resolved Blockchain Infos: RPCs={found_rpcs} | Contract={final_contract} | Selector={final_selector}")
+
+            # Query blockchain node and decode return bytes
+            final_payload, extracted_rpc = fetch_payload(found_rpcs, final_contract, final_selector, proxies)
+            if final_payload.get("status") == "success" and "extracted_payload" in final_payload:
+                decoded_payload = decode_payload(final_payload["extracted_payload"])
+                logger.info("Decoded EtherHiding Payload:\n" + json.dumps(decoded_payload, indent=2))
+
+                malicious_url, is_last_stage = extract_malicious_url_and_check_next_stage(decoded_payload)
+                blockchain_infos.append({
+                    "malicious_url": malicious_url,
+                    "stage": i,
+                    "smart_contract": final_contract,
+                    "rpc": extracted_rpc,
+                    "selector": final_selector,
+                    "payload": final_payload["extracted_payload"],
+                    "decoded_payload": decoded_payload
+                })
+
+                if is_last_stage:
+                    break
+                else:
+                    raw_script = decoded_payload
+
+    return blockchain_infos
 
 
 def extract_suspicious_oauth_patterns(text: str) -> List[SuspiciousCommand]:
