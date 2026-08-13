@@ -1377,6 +1377,15 @@ class SuspiciousCommand(BaseModel):
         """Check if this is a high-risk command."""
         return CommandRiskLevel.HIGH.value in self.RiskLevel or CommandRiskLevel.CRITICAL.value in self.RiskLevel
 
+class EtherhidingResult(BaseModel):
+    MaliciousUrls: Set[str] = Field(..., description="Malicious URLs detected")
+    RawScript: str = Field(..., description="Raw deobfuscated and decoded script containing Etherhiding")
+    Stage: int = Field(..., description="Clickfix stage levels")
+    SmartContract: str = Field(..., description="Smart contract detected")
+    RPC: str = Field(..., description="RPC endpoint detected")
+    FunctionSelector: str = Field(..., description="Function selector detected")
+    Payload: str = Field(..., description="Encoded payload identified")
+    DecodedPayload: str = Field(..., description="Decoded payload identified")
 
 class EncodedPowerShellResult(BaseModel):
     """An encoded PowerShell command with its decoded content."""
@@ -1472,6 +1481,14 @@ class ClickGrabConfig(BaseModel):
                 raise ValueError(f"Invalid format: {v}. Must be one of: {', '.join([f.value for f in ReportFormat])}")
         return v
 
+class Base64XoredJavaScriptResult(BaseModel):
+    ScriptContent: str = Field(..., description="Script tag extracted from HTML")
+    MatchedBase64: str = Field(..., description="Base64 encoded string extracted from JS script")
+    MatchedXOROperation: str = Field(..., description="XOR operation extracted from JS script")
+    XORKey: str = Field(..., description="XOR key extracted from JS script")
+    DecodedBase64: str = Field(..., description="Decoded Base64")
+    DecryptedText: str = Field(..., description="Decoded Base64 XOR-decrypted by using XOR key")
+
 
 class JavaScriptRedirectChain(BaseModel):
     """Details about a detected JavaScript redirect chain."""
@@ -1511,12 +1528,13 @@ class AnalysisResult(BaseModel):
     PowerShellDownloads: List[PowerShellDownload] = Field(default_factory=list, description="PowerShell download commands")
     CaptchaElements: List[str] = Field(default_factory=list, description="CAPTCHA-related HTML elements")
     ObfuscatedJavaScript: List[str] = Field(default_factory=list, description="Potentially obfuscated JavaScript")
-    EtherhidingJavaScript: List[str] = Field(default_factory=list, description="Potentially JavaScript that contacts BlockChains")
+    EtherhidingJavaScript: List[EtherhidingResult] = Field(default_factory=list, description="Potentially JavaScript that contacts BlockChains")
     SuspiciousCommands: List[SuspiciousCommand] = Field(default_factory=list, description="Suspicious commands detected")
     BotDetection: List[str] = Field(default_factory=list, description="Bot detection and sandbox evasion techniques")
     SessionHijacking: List[str] = Field(default_factory=list, description="Session token or cookie theft attempts")
     ProxyEvasion: List[str] = Field(default_factory=list, description="Proxy/security tool evasion techniques")
     JavaScriptRedirects: List[str] = Field(default_factory=list, description="Suspicious JavaScript redirects and loaders")
+    Base64XoredJavaScript: List[Base64XoredJavaScriptResult] = Field(default_factory=list, description="Base64 and XOR JavaScript detected")
     JavaScriptRedirectChains: List[JavaScriptRedirectChain] = Field(
         default_factory=list,
         description="Redirect chains identified from external JavaScript files",
@@ -1582,6 +1600,7 @@ class AnalysisResult(BaseModel):
             len(self.SessionHijacking) +
             len(self.ProxyEvasion) +
             len(self.JavaScriptRedirects) +
+            len(self.Base64XoredJavaScript) +
             len(self.JavaScriptRedirectChains) +
             len(self.RedirectFollows) +
             len(self.ParkingPageLoaders) +
@@ -1827,6 +1846,7 @@ class AnalysisResult(BaseModel):
         score += len(self.SessionHijacking) * 15
         score += len(self.ProxyEvasion) * 10
         score += len(self.JavaScriptRedirects) * 15
+        score += len(self.Base64XoredJavaScript) * 10
         score += len(self.JavaScriptRedirectChains) * 20
         score += len(self.RedirectFollows) * 20
         score += len(self.ParkingPageLoaders) * 25  # Add high score for parking page loaders

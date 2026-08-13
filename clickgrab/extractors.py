@@ -1,7 +1,8 @@
 import base64
 import json
 import re
-from typing import List, Dict, Any
+from codecs import ignore_errors
+from typing import List, Dict, Any, Optional
 from typing import Set, Tuple, Union
 
 # Python 3.11+ compatibility for StrEnum
@@ -21,7 +22,9 @@ try:
         CommandType,
         CommandRiskLevel,
         CommonPatterns,
-    )
+        EtherhidingResult,
+        Base64XoredJavaScriptResult,
+)
     from .blockchain_utils import (
         extract_etherhiding_js_patterns,
         fetch_payload,
@@ -31,7 +34,7 @@ try:
         pick_correct_selector,
         smart_deobfuscate,
         extract_malicious_url_and_check_next_stage,
-    )
+)
 except ImportError:
     from models import (
         Base64Result,
@@ -41,6 +44,8 @@ except ImportError:
         CommandType,
         CommandRiskLevel,
         CommonPatterns,
+        EtherhidingResult,
+        Base64XoredJavaScriptResult,
     )
     from blockchain_utils import (
         extract_etherhiding_js_patterns,
@@ -775,16 +780,19 @@ def extract_obfuscated_javascript(text: str, show_entire_js: bool = False) -> Li
     return results
 
 # TODO: add deobfuscation (synchrony already implemented but it needs npm install -g deobfuscator)
-def extract_etherhiding_payload(text: str, proxies: Dict[str, str]) -> List[Dict[str, Any]]:
+def extract_etherhiding_payload(text: str, proxies: Dict[str, str] | None) -> List[EtherhidingResult]:
     """
     Extract EtherHiding patterns (blockchain infos like smart contract, function selector, and RPC URL).
     Then contact the RPC to obtain the payload and decode it using helper utilities.
     """
-    etherhiding_scripts = [script.Decoded for script in extract_base64_strings(text) if script.ContainsEtherhiding]
-
-    if not etherhiding_scripts:
-        js_scripts = extract_obfuscated_javascript(text, show_entire_js=True)
-        etherhiding_scripts = [item.get("script") for item in js_scripts if item.get("is_etherhiding")]
+    # Take base64+XOR scripts, base64 scripts and JS obfuscated scripts from HTML
+    etherhiding_scripts = []
+    xored_scripts = [script.DecryptedText for script in extract_base64_and_xored_js(text)]
+    etherhiding_scripts.extend(xored_scripts)
+    base64_scripts = [script.Decoded for script in extract_base64_strings(text) if script.ContainsEtherhiding]
+    etherhiding_scripts.extend(base64_scripts)
+    js_scripts = [item.get("script") for item in extract_obfuscated_javascript(text, show_entire_js=True) if item.get("is_etherhiding")]
+    etherhiding_scripts.extend(js_scripts)
 
     if not etherhiding_scripts:
         logger.info("No obfuscated JavaScript snippets identified for EtherHiding extraction.")
@@ -798,20 +806,17 @@ def extract_etherhiding_payload(text: str, proxies: Dict[str, str]) -> List[Dict
     final_contract = extract_valid_smart_contract(text)
     if not final_contract:
         logger.warning("No valid smart contract address identified in script.")
-        # return []
 
     for raw_script in etherhiding_scripts:
         extracted_rpc = None
         extracted_selectors = None
         logger.info("Extracting smart contract and RPC info from target payload...")
+
+        # Deobfuscate via Synchrony (returns pure JS string)
+        # cleaned_script = smart_deobfuscate(raw_script)
+
         # Iterating 2 times in case we found a multi-stage Etherhiding (stops at the 2nd stage)
         for i in range(1, 3):
-            logger.info("-------------------------------------------------")
-            logger.info(f"Etherhiding stage: {i}")
-            logger.info(f"Raw script: {raw_script}")
-            # Deobfuscate via Synchrony (returns pure JS string)
-            # cleaned_script = smart_deobfuscate(raw_script)
-
             # Extract RPC Endpoint
             found_rpcs = re.findall(rpc_pattern, raw_script)
             if not found_rpcs:
@@ -820,7 +825,7 @@ def extract_etherhiding_payload(text: str, proxies: Dict[str, str]) -> List[Dict
                 if found_domains:
                     found_rpcs = [f"https://{found_domains[0]}"]
                 elif blockchain_infos and i > 1:
-                    found_rpcs = list(blockchain_infos[-1]["rpc"])
+                    found_rpcs = list(blockchain_infos[-1].RPC)
                 else:
                     break
 
@@ -831,14 +836,13 @@ def extract_etherhiding_payload(text: str, proxies: Dict[str, str]) -> List[Dict
             # there's a new smart contract, otherwise use the previously extracted one.
             if not final_contract or i > 1:
                 final_contract = extract_valid_smart_contract(raw_script)
-
                 if not final_contract and blockchain_infos:
-                    final_contract = list(blockchain_infos[-1]["smart_contract"])
+                    final_contract = blockchain_infos[-1].SmartContract
 
             # If no smart contract extracted at this point, there's no etherhiding or I cannot detect it...
             if not final_contract:
                 logger.warning("No valid smart contract address identified in script. Skipping...")
-                continue
+                break
 
             # Extract EVM Function Selector
             # At the 2nd stage, use the previously extracted selector.
@@ -847,34 +851,83 @@ def extract_etherhiding_payload(text: str, proxies: Dict[str, str]) -> List[Dict
                 final_selector = pick_correct_selector(extracted_selectors)
                 if not final_selector:
                     logger.warning(f"Could not resolve function selector for contract {final_contract}")
-                    continue
 
             logger.info(
                 f"Resolved Blockchain Infos: RPCs={found_rpcs} | Contract={final_contract} | Selector={final_selector}")
 
-            # Query blockchain node and decode return bytes
+            # Query blockchain node
             final_payload, extracted_rpc = fetch_payload(found_rpcs, final_contract, final_selector, proxies)
+
+            # RPC call succeeded
             if final_payload.get("status") == "success" and "extracted_payload" in final_payload:
                 decoded_payload = decode_payload(final_payload["extracted_payload"])
-                logger.info("Decoded EtherHiding Payload:\n" + json.dumps(decoded_payload, indent=2))
-
                 malicious_url, is_last_stage = extract_malicious_url_and_check_next_stage(decoded_payload)
-                blockchain_infos.append({
-                    "malicious_url": malicious_url,
-                    "stage": i,
-                    "smart_contract": final_contract,
-                    "rpc": extracted_rpc,
-                    "selector": final_selector,
-                    "payload": final_payload["extracted_payload"],
-                    "decoded_payload": decoded_payload
-                })
-
+                blockchain_infos.append(
+                    EtherhidingResult(
+                        MaliciousUrls=malicious_url,
+                        RawScript=f"{raw_script.strip()[:300]}..." if len(raw_script) > 300 else raw_script.strip(),
+                        Stage=i,
+                        SmartContract=final_contract,
+                        RPC=extracted_rpc,
+                        FunctionSelector=final_selector or "",
+                        Payload=final_payload["extracted_payload"],
+                        DecodedPayload=decoded_payload
+                    )
+                )
+                logger.info("Etherhiding JS found")
                 if is_last_stage:
                     break
                 else:
                     raw_script = decoded_payload
+            else:
+                # Add partial Etherhiding infos (caused by request failure)
+                blockchain_infos.append(
+                    EtherhidingResult(
+                        MaliciousUrls=set(),
+                        RawScript=f"{raw_script.strip()[:300]}..." if len(raw_script) > 300 else raw_script.strip(),
+                        Stage=i,
+                        SmartContract=final_contract,
+                        RPC=extracted_rpc or (found_rpcs[0] if found_rpcs else ""),
+                        FunctionSelector=final_selector or "",
+                        Payload="",
+                        DecodedPayload=""
+                    )
+                )
+                logger.info("Partial Etherhiding JS found")
 
-    return blockchain_infos
+
+    # Deduplicate final blockchain_infos entries while preserving order
+    unique_blockchain_infos = []
+    seen_results = set()
+
+    for info in blockchain_infos:
+        if isinstance(info.MaliciousUrls, (list, set, tuple)):
+            urls_key = tuple(sorted(info.MaliciousUrls))
+        else:
+            urls_key = str(info.MaliciousUrls)
+
+        # Safely serialize DecodedPayload (dict, list, or primitive)
+        if isinstance(info.DecodedPayload, (dict, list)):
+            decoded_key = json.dumps(info.DecodedPayload, sort_keys=True)
+        else:
+            decoded_key = str(info.DecodedPayload)
+
+        # Exclude RawScript so identical blockchain infos are merged
+        dedup_key = (
+            info.Stage,
+            (info.SmartContract or "").lower(),
+            info.RPC,
+            info.FunctionSelector,
+            info.Payload,
+            decoded_key,
+            urls_key
+        )
+
+        if dedup_key not in seen_results:
+            seen_results.add(dedup_key)
+            unique_blockchain_infos.append(info)
+
+    return unique_blockchain_infos
 
 
 def extract_suspicious_oauth_patterns(text: str) -> List[SuspiciousCommand]:
@@ -1236,53 +1289,53 @@ def extract_patterns_with_context(
 
 def extract_js_redirects(content: str) -> List[str]:
     """Extract suspicious JavaScript redirects.
-    
+
     Detects obfuscated JavaScript redirects, parking pages with encoded parameters,
     and suspicious script loaders often used for malicious activity.
-    
+
     Args:
         content: The HTML content to analyze
-        
+
     Returns:
         List of detected JavaScript redirect patterns
     """
     results = []
     matched_positions = set()
-    
+
     # Check for suspicious script tags loading external files
     script_tag_patterns = [
         r'<script\s+src\s*=\s*["\'](/[a-zA-Z0-9]+\.[a-zA-Z0-9]+)["\'](?:\s+(?!src)[a-zA-Z0-9\-_]+(?:\s*=\s*["\'][^"\']*["\'])?)*\s*></script>',
         r'<script\s+src\s*=\s*["\'](https?://[^"\']*)["\'](?:\s+(?!src)[a-zA-Z0-9\-_]+(?:\s*=\s*["\'][^"\']*["\'])?)*\s*></script>'
     ]
-    
+
     for pattern in script_tag_patterns:
         for match in re.finditer(pattern, content, re.IGNORECASE):
             if check_match_overlap(match, matched_positions):
                 continue
-            
+
             mark_match_positions(match, matched_positions)
             script_src = match.group(1)
-            
+
             # Look for suspicious script names or random-looking filenames
             if re.search(r'/[a-zA-Z0-9]{8,}\.[a-zA-Z0-9]{1,4}$', script_src) or \
                re.search(r'[A-Z][a-z][A-Z][a-z][A-Z][a-z]', script_src) or \
                re.search(r'[0-9][A-Z][0-9][a-z][0-9]', script_src):
                 results.append(f"Suspicious external script: {match.group(0)}")
-    
+
     # Check for encoded data in window variables
     encoded_data_patterns = [
         r'window\.park\s*=\s*["\']((?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{4}))["\']',
         r'window\.[a-zA-Z0-9_]+\s*=\s*["\']((?:[A-Za-z0-9+/]{4}){5,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{4}))["\']'
     ]
-    
+
     for pattern in encoded_data_patterns:
         for match in re.finditer(pattern, content, re.IGNORECASE):
             if check_match_overlap(match, matched_positions):
                 continue
-            
+
             mark_match_positions(match, matched_positions)
             results.append(f"Encoded data in window variable: {match.group(0)}")
-    
+
     # Check for generic redirect patterns from CommonPatterns
     for pattern in CommonPatterns.SUSPICIOUS_JS_REDIRECT_PATTERNS:
         try:
@@ -1290,29 +1343,29 @@ def extract_js_redirects(content: str) -> List[str]:
             for match in matches:
                 if check_match_overlap(match, matched_positions):
                     continue
-                
+
                 mark_match_positions(match, matched_positions)
                 context = extract_match_with_context(match, content)
                 results.append(f"Suspicious JavaScript redirect pattern: {context}")
         except re.error:
             continue
-    
+
     # Check for timeout/interval redirects
     timeout_patterns = [
         r'setTimeout\s*\(\s*function\s*\(\s*\)\s*{\s*(?:window\.)?location(?:\.href)?\s*=',
         r'setTimeout\s*\(\s*function\s*\(\s*\)\s*{\s*(?:window\.)?location\.replace\s*\(',
         r'setInterval\s*\(\s*function\s*\(\s*\)\s*{\s*(?:window\.)?location'
     ]
-    
+
     for pattern in timeout_patterns:
         for match in re.finditer(pattern, content, re.IGNORECASE | re.DOTALL):
             if check_match_overlap(match, matched_positions):
                 continue
-            
+
             mark_match_positions(match, matched_positions)
             context = extract_match_with_context(match, content, context_length=100)
             results.append(f"Delayed JavaScript redirect: {context}")
-    
+
     # Check for dynamic script creation
     dynamic_script_patterns = [
         r'document\.createElement\s*\(\s*[\'"]script[\'"]\s*\)[^;]*\.src\s*=',
@@ -1320,12 +1373,12 @@ def extract_js_redirects(content: str) -> List[str]:
         r'const\s+[a-zA-Z0-9_$]+\s*=\s*document\.createElement\s*\(\s*[\'"]script[\'"]\s*\)',
         r'let\s+[a-zA-Z0-9_$]+\s*=\s*document\.createElement\s*\(\s*[\'"]script[\'"]\s*\)'
     ]
-    
+
     for pattern in dynamic_script_patterns:
         for match in re.finditer(pattern, content, re.IGNORECASE | re.DOTALL):
             if check_match_overlap(match, matched_positions):
                 continue
-            
+
             mark_match_positions(match, matched_positions)
             context = extract_match_with_context(match, content, context_length=100)
             results.append(f"Dynamic script creation: {context}")
@@ -1352,17 +1405,136 @@ def extract_js_redirects(content: str) -> List[str]:
         r'\[[\'"`][^\s\'"` \[\]]+[\'"`]\]\[[\'"`][^\s\'"` \[\]]+[\'"`]\]\([\'"`][^\s\'"` \[\]]+[\'"`]\]',
         r'(?:\[[\'"`][^\s\'"` \[\]]+[\'"`]\]){3,}'
     ]
-    
+
     for pattern in obfuscated_chain_patterns:
         for match in re.finditer(pattern, content, re.IGNORECASE):
             if check_match_overlap(match, matched_positions):
                 continue
-            
+
             mark_match_positions(match, matched_positions)
             context = extract_match_with_context(match, content)
             results.append(f"Obfuscated function call chain: {context}")
-    
-    return results 
+
+    return results
+
+def _xor_decrypt(data: bytes, key: Union[int, bytes]) -> bytes:
+    """Helper to XOR bytes against an integer or repeating byte/string key."""
+    if isinstance(key, int):
+        return bytes([b ^ (key & 0xFF) for b in data])
+    elif isinstance(key, bytes) and len(key) > 0:
+        return bytes([b ^ key[i % len(key)] for i, b in enumerate(data)])
+    return data
+
+def _parse_xor_key(pattern, script_body):
+    key_match = re.search(pattern, script_body, re.IGNORECASE)
+    if key_match:
+        raw_val = key_match.group(1).strip('"\'')
+        if raw_val.startswith(('0x', '0X')):
+            key_value = int(raw_val, 16)
+            key_repr = hex(key_value)
+        elif raw_val.isdigit():
+            key_value = int(raw_val)
+            key_repr = raw_val
+        else:
+            key_value = raw_val.encode('utf-8')
+            key_repr = raw_val
+
+        return key_value, key_repr
+    return "", ""
+
+def extract_xor_key(xor_operand: str, script_body: str) -> tuple[int | bytes, str]:
+    # Case 1: xor key is already a literal number/hex (e.g., ^ 0x5F or ^ 123)
+    if xor_operand.startswith(('0x', '0X')):
+        key_value = int(xor_operand, 16)
+        key_repr = hex(key_value)
+    elif xor_operand.isdigit():
+        key_value = int(xor_operand)
+        key_repr = str(key_value)
+
+    # Case 2: operand is a variable name (e.g., ^ _398c) -> Extract variable initialization
+    else:
+        var_pattern = rf'\b{re.escape(xor_operand)}\s*=\s*(0x[0-9a-fA-F]+|\d+|["\'][^"\']+["\'])'
+        key_value, key_repr = _parse_xor_key(var_pattern, script_body)
+
+    # Fallback: keyword search if previous cases failed (e.g. key = 0x5F)
+    if key_value is None:
+        keyword_pattern = r'\b(?:key|mask|xor|secret|pad)\s*=\s*(0x[0-9a-fA-F]+|\d+|["\'][^"\']+["\'])'
+        key_value, key_repr = _parse_xor_key(keyword_pattern, script_body)
+
+    return key_value, key_repr
+
+
+def extract_base64_and_xored_js(content: str) -> List[Base64XoredJavaScriptResult]:
+    results = []
+
+    # HTML Script extractor
+    SCRIPT_TAG_REGEX = re.compile(
+        r'<script\b[^>]*>(.*?)</script\s*>',
+        re.IGNORECASE | re.DOTALL
+    )
+
+    JS_PATTERNS = {
+        # Unified Base64 extractor (captures Base64 payload in Group 1)
+        "base64_blob": re.compile(
+            r'(?:atob\s*\(\s*|Buffer\.from\s*\([^)]*|)\s*["\']?([A-Za-z0-9+/]{16,}={0,2})["\']?',
+            re.IGNORECASE
+        ),
+        # Matches bitwise XOR operations and captures variable name or literal operand
+        "xor_op": re.compile(
+            r'\w+\.charCodeAt\([^)]+\)\s*\^\s*([a-zA-Z0-9_$]+)|\^\s*([a-zA-Z0-9_$]+)|\bString\.fromCharCode\s*\([^)]*\^\s*([a-zA-Z0-9_$]+)',
+            re.IGNORECASE
+        )
+    }
+
+    scripts = SCRIPT_TAG_REGEX.findall(content)
+
+    for idx, script_body in enumerate(scripts, 1):
+        has_b64 = JS_PATTERNS["base64_blob"].search(script_body)
+        has_xor = JS_PATTERNS["xor_op"].search(script_body)
+
+        if has_b64 and has_xor:
+            # Extract matched Base64 string
+            b64_str = has_b64.group(1)
+
+            # Extract XOR key (variable or literal)
+            xor_operand = has_xor.group(1) or has_xor.group(2) or has_xor.group(3)
+            key_value, key_repr = extract_xor_key(xor_operand, script_body)
+
+            # Perform Base64 decoding and XOR decryption
+            decrypted_text = ""
+            try:
+                padded_b64 = b64_str + "=" * (-len(b64_str) % 4)
+
+                # Decode Base64 into raw bytes
+                raw_b64_bytes = base64.b64decode(padded_b64)
+
+                # Perform XOR decryption on the raw bytes
+                decrypted_bytes = _xor_decrypt(raw_b64_bytes, key_value)
+
+                # Decode the decrypted bytes into a readable string
+                try:
+                    decrypted_text = decrypted_bytes.decode('utf-8', errors='replace')
+                except UnicodeDecodeError:
+                    logger.error("UnicodeDecodeError")
+
+                # Safe string representation of raw B64 bytes for JSON reporting
+                decoded_b64_repr = raw_b64_bytes.decode('utf-8', errors='replace')
+
+            except Exception as e:
+                logger.error(f"Decoding failed: {str(e)}")
+
+            results.append(
+                Base64XoredJavaScriptResult(
+                    ScriptContent=script_body.strip(),
+                    MatchedBase64=b64_str,
+                    MatchedXOROperation=has_xor.group(0),
+                    XORKey=key_repr,
+                    DecodedBase64=decoded_b64_repr,
+                    DecryptedText=decrypted_text,
+                )
+            )
+
+    return results
 
 
 def extract_parking_page_loaders(content: str) -> List[str]:

@@ -163,7 +163,7 @@ def extract_function_selectors(text) -> list[dict]:
                 })
         elif var_name:
             # Find variable declaration (e.g., var _6c5a6e = '38bcdc1c')
-            var_pattern = rf'(?:var|let|const)\s+{re.escape(var_name)}\s*=\s*[\'"`]([a-fA-F0-9]{8})[\'"`]'
+            var_pattern = rf'(?:var|let|const)\s+{re.escape(var_name)}\s*=\s*[\'"`]([a-fA-F0-9]{{8}})[\'"`]'
             var_match = re.search(var_pattern, text)
             if var_match:
                 selector = "0x" + var_match.group(1).lower()
@@ -180,18 +180,18 @@ def extract_function_selectors(text) -> list[dict]:
     hex_matches = re.findall(standalone_hex_pattern, text)
     for raw_hex in hex_matches:
         selector = "0x" + raw_hex.lower()
-        if selector in CommonPatterns.KNOWN_SELECTOR_DB and selector not in seen_selectors:
+        if selector not in seen_selectors:
             seen_selectors.add(selector)
             results.append({
                 "selector": selector,
-                "type": "known_signature_fallback",
-                "known_alias": CommonPatterns.KNOWN_SELECTOR_DB[selector]
+                "type": "standalone_hex_fallback",
+                "known_alias": CommonPatterns.KNOWN_SELECTOR_DB.get(selector, "Unknown Custom Selector")
             })
 
     return results
 
 
-def pick_correct_selector(selectors_list: list[dict]) -> str | None:
+def pick_correct_selector(selectors_list: list[dict]) -> str:
     """
     From a list of found selectors, pick the correct one with the following priority levels:
     1. Known malicious/campaign signatures or RPC payload bound context
@@ -216,7 +216,7 @@ def pick_correct_selector(selectors_list: list[dict]) -> str | None:
         return valid_abis[0]["selector"]
 
     # Fallback if nothing specific matched
-    return selectors_list[0]["selector"] if selectors_list else None
+    return selectors_list[0]["selector"] if selectors_list else ""
 
 
 def extract_etherhiding_js_patterns(script_content: str) -> tuple[bool, int, dict | None]:
@@ -290,7 +290,7 @@ def decode_payload(raw_hex: str) -> str:
         if base64_decoded:
             decoded_hex[i] = base64_decode(decoded_hex[i])
 
-    return decoded_hex[0]
+    return "\n\n".join(decoded_hex)
 
 def fetch_payload(found_rpcs: List[str], contract_address: str, selector: str, proxies: Dict[str, str] | None) -> Tuple[dict, str]:
     """
@@ -321,7 +321,7 @@ def fetch_payload(found_rpcs: List[str], contract_address: str, selector: str, p
 
 VALID_TLDS = {
     "com", "org", "net", "xyz", "io", "co", "info", "biz", "gov",
-    "edu", "me", "dev", "app", "tv", "cc", "online", "site", "tech", "link", "ai"
+    "edu", "me", "dev", "app", "tv", "cc", "online", "site", "tech", "link", "ai", "world"
 }
 
 def is_valid_url_or_ip(text):

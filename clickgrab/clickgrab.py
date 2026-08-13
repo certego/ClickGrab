@@ -159,7 +159,7 @@ def _read_text_capped(response, max_bytes: int = 3_000_000, deadline: Optional[f
         return raw.decode("utf-8", errors="ignore")
 
 
-def get_html_content(url: str, proxies: Dict[str, str], max_redirects: int = 2) -> Optional[str]:
+def get_html_content(url: str, proxies: Dict[str, str] | None, max_redirects: int = 2) -> Optional[str]:
     """Fetch HTML content from a URL.
     
     Args:
@@ -835,6 +835,7 @@ def analyze_url(url: str, proxies: Dict[str, str] | None = None) -> Optional[Ana
     result.SessionHijacking = extractors.extract_session_hijacking(html_content)
     result.ProxyEvasion = extractors.extract_proxy_evasion(html_content)
     result.JavaScriptRedirects = extractors.extract_js_redirects(html_content)
+    result.Base64XoredJavaScript = extractors.extract_base64_and_xored_js(html_content)
     result.ParkingPageLoaders = extractors.extract_parking_page_loaders(html_content)
 
     # Add November 2025 threat extractions (fake video conferencing, ClickFix instructions, steganography)
@@ -1326,6 +1327,61 @@ def generate_html_report(results: List[AnalysisResult], config: ClickGrabConfig)
                     html_content += "</li>"
             html_content += "</ul></div>"
 
+        # Base64 + XOR JavaScript
+            # Base64 + XOR JavaScript
+            if result.Base64XoredJavaScript:
+                html_content += f"""
+                    <div class="indicator">
+                        <p class="indicator-title risk-high">Base64 and XOR JavaScript ({len(result.Base64XoredJavaScript)})</p>
+                        <ul>
+                    """
+
+                for js in result.Base64XoredJavaScript:
+                    # Handle both dicts and objects safely
+                    get_val = lambda key: js.get(key) if isinstance(js, dict) else getattr(js, key, None)
+
+                    script_idx = get_val("script_index")
+                    xor_key = get_val("xor_key")
+                    matched_xor = get_val("matched_xor_op")
+                    matched_b64 = get_val("matched_b64") or ""
+                    decrypted_text = get_val("decrypted_text")
+                    error = get_val("error")
+
+                    b64_trunc = matched_b64[:100] + ("..." if len(matched_b64) > 100 else "")
+
+                    html_content += "<li>"
+                    html_content += f"<div><strong>Script Index:</strong> #{script_idx}</div>"
+
+                    if xor_key:
+                        html_content += f"<div><strong>XOR Key:</strong> <code>{xor_key}</code></div>"
+                    if matched_xor:
+                        html_content += f"<div><strong>XOR Op:</strong> <code>{matched_xor}</code></div>"
+                    if matched_b64:
+                        html_content += f"<div><strong>Base64 Payload:</strong> <code>{b64_trunc}</code></div>"
+                    if decrypted_text:
+                        html_content += f"<div><strong>Decrypted Output:</strong> <pre>{decrypted_text}</pre></div>"
+                    if error:
+                        html_content += f"<div><strong>Error:</strong> <span class='risk-high'>{error}</span></div>"
+
+                    html_content += "</li>"
+
+                html_content += "</ul></div>"
+
+            # Redirect Follows
+            if result.RedirectFollows:
+                html_content += f"""
+                    <div class="indicator">
+                        <p class="indicator-title">Redirect Follows ({len(result.RedirectFollows)})</p>
+                        <ul>
+                    """
+                for rf in result.RedirectFollows:
+                    html_content += f"<li><strong>{rf.Source} ({rf.Method}):</strong> {rf.OriginalURL}"
+                    if rf.FinalURL:
+                        html_content += f" → {rf.FinalURL}"
+                    html_content += f" [{rf.Status}]</li>"
+                html_content += "</ul></div>"
+
+
         # Redirect Follows
         if result.RedirectFollows:
             html_content += f"""
@@ -1617,6 +1673,7 @@ def generate_json_report(results: List[AnalysisResult], config: ClickGrabConfig)
             "ip_addresses": sum(len(result.IPAddresses) for result in results),
             "clipboard_commands": sum(len(result.ClipboardCommands) for result in results),
             "javascript_redirects": sum(len(result.JavaScriptRedirects) for result in results),
+            "base64_xored_javascript": sum(len(result.Base64XoredJavaScript) for result in results),
             "javascript_redirect_chains": sum(len(result.JavaScriptRedirectChains) for result in results),
             "redirect_follows": sum(len(result.RedirectFollows) for result in results),
             # November 2025 threat indicators
