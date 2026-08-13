@@ -1,7 +1,9 @@
 import base64
 import re
 from typing import Dict, List, Tuple, Set
-
+import os
+import tempfile
+import subprocess
 import requests
 from Crypto.Hash import keccak
 
@@ -13,6 +15,92 @@ except ImportError:
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def extract_obfuscator_io_js(html_content: str) -> List[str]:
+    """
+    Extracts obfuscated JavaScript payloads (specifically obfuscator.io variants
+    containing custom lookup functions like `a0_0x...`, RC4 string arrays, and rotator IIFEs)
+    from HTML content.
+    """
+    if not html_content or not isinstance(html_content, str):
+        return []
+
+    # Extract content from all <script> tags
+    script_tag_pattern = re.compile(r'<script[^>]*>(.*?)</script>', re.DOTALL | re.IGNORECASE)
+    raw_scripts = script_tag_pattern.findall(html_content)
+
+    # If no <script> tags are found, process the raw HTML string directly
+    if not raw_scripts:
+        raw_scripts = [html_content]
+
+    # Pattern A: rotator Loop -> while(!![]) { ... ["push"](...["shift"]()) }
+    rotator_pattern = re.compile(
+        r'while\s*\(\s*!\s*!\s*\[\s*\]\s*\)\s*\{[\s\S]*?\[\s*["\']push["\']\s*\]\s*\(\s*[a-zA-Z0-9_$]+\s*\[\s*["\']shift["\']\s*\]\s*\(\s*\)\s*\)',
+        re.IGNORECASE
+    )
+
+    # Pattern B: string array definition -> function a0_0x40bd() { const _0x39b540=["W77c..."]
+    array_def_pattern = re.compile(
+        r'function\s+(?:a0_)?_0x[a-f0-9]+\s*\(\s*\)\s*\{\s*(?:const|var|let)\s+_0x[a-f0-9]+\s*=\s*\[\s*["\'][A-Za-z0-9+/=]{8,}',
+        re.IGNORECASE
+    )
+
+    # Pattern C: decoder function with RC4/Base64 table markers -> a0_0x1ab6 or _0x1d43
+    decoder_func_pattern = re.compile(
+        r'function\s+(?:a0_)?_0x[a-f0-9]+\s*\(\s*_0x[a-f0-9]+\s*,\s*_0x[a-f0-9]+\s*\)\s*\{',
+        re.IGNORECASE
+    )
+
+    extracted_payloads = []
+
+    for script in raw_scripts:
+        script_clean = script.strip()
+        if not script_clean:
+            continue
+
+        has_rotator = bool(rotator_pattern.search(script_clean))
+        has_array = bool(array_def_pattern.search(script_clean))
+        has_decoder = bool(decoder_func_pattern.search(script_clean))
+
+        if has_array or has_rotator or has_decoder:
+            extracted_payloads.append(script_clean)
+
+    return extracted_payloads
+
+
+def deobfuscate_obfuscator_io_with_webcrack(js_code: str) -> str | None:
+    """
+    Deobfuscates JavaScript using Webcrack.
+    Handles obfuscator.io string decoders, proxy functions, string concatenation,
+    and dead-code elimination without executing the payload.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        input_file = os.path.join(temp_dir, "input.js")
+        output_dir = os.path.join(temp_dir, "output")
+
+        with open(input_file, "w", encoding="utf-8") as f:
+            f.write(js_code)
+
+        try:
+            subprocess.run(
+                ["npx", "webcrack", input_file, "-o", output_dir],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+
+            cleaned_file = os.path.join(output_dir, "deobfuscated.js")
+            if os.path.exists(cleaned_file):
+                with open(cleaned_file, "r", encoding="utf-8") as f:
+                    return f.read()  # Read Webcrack output
+
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            logger.error(f"Webcrack execution failed: {e}")
+            return None
+
+    return js_code
+
 
 def extract_valid_smart_contract(text) -> str | None:
     pattern = r"0x[a-fA-F0-9]{40}"

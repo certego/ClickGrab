@@ -1,8 +1,7 @@
 import base64
 import json
 import re
-from codecs import ignore_errors
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from typing import Set, Tuple, Union
 
 # Python 3.11+ compatibility for StrEnum
@@ -32,8 +31,9 @@ try:
         extract_valid_smart_contract,
         extract_function_selectors,
         pick_correct_selector,
-        smart_deobfuscate,
         extract_malicious_url_and_check_next_stage,
+        deobfuscate_obfuscator_io_with_webcrack,
+        extract_obfuscator_io_js,
 )
 except ImportError:
     from models import (
@@ -54,8 +54,9 @@ except ImportError:
         extract_valid_smart_contract,
         extract_function_selectors,
         pick_correct_selector,
-        smart_deobfuscate,
         extract_malicious_url_and_check_next_stage,
+        deobfuscate_obfuscator_io_with_webcrack,
+        extract_obfuscator_io_js,
     )
 
 import logging
@@ -792,6 +793,8 @@ def extract_etherhiding_payload(text: str, proxies: Dict[str, str] | None) -> Li
     etherhiding_scripts.extend(base64_scripts)
     js_scripts = [item.get("script") for item in extract_obfuscated_javascript(text, show_entire_js=True) if item.get("is_etherhiding")]
     etherhiding_scripts.extend(js_scripts)
+    obfuscated_scripts = [script for script in extract_obfuscator_io_js(text)]
+    etherhiding_scripts.extend(obfuscated_scripts)
 
     if not etherhiding_scripts:
         logger.info("No obfuscated JavaScript snippets identified for EtherHiding extraction.")
@@ -810,6 +813,13 @@ def extract_etherhiding_payload(text: str, proxies: Dict[str, str] | None) -> Li
         extracted_rpc = None
         extracted_selectors = None
         logger.info("Extracting smart contract and RPC info from target payload...")
+
+        # If it's an obfuscator.io JS code, we need to deobfuscate first
+        if raw_script in obfuscated_scripts:
+            raw_script = deobfuscate_obfuscator_io_with_webcrack(raw_script)
+            if not raw_script:
+                continue
+
         # Iterating 2 times in case we found a multi-stage Etherhiding (stops at the 2nd stage)
         for i in range(1, 3):
             # Extract RPC Endpoint
