@@ -779,7 +779,6 @@ def extract_obfuscated_javascript(text: str, show_entire_js: bool = False) -> Li
     
     return results
 
-# TODO: add deobfuscation (synchrony already implemented but it needs npm install -g deobfuscator)
 def extract_etherhiding_payload(text: str, proxies: Dict[str, str] | None) -> List[EtherhidingResult]:
     """
     Extract EtherHiding patterns (blockchain infos like smart contract, function selector, and RPC URL).
@@ -811,10 +810,6 @@ def extract_etherhiding_payload(text: str, proxies: Dict[str, str] | None) -> Li
         extracted_rpc = None
         extracted_selectors = None
         logger.info("Extracting smart contract and RPC info from target payload...")
-
-        # Deobfuscate via Synchrony (returns pure JS string)
-        # cleaned_script = smart_deobfuscate(raw_script)
-
         # Iterating 2 times in case we found a multi-stage Etherhiding (stops at the 2nd stage)
         for i in range(1, 3):
             # Extract RPC Endpoint

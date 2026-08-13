@@ -1,10 +1,8 @@
 import base64
-import os
-import subprocess
-import tempfile
-from typing import Dict, List, Tuple, Set
-import requests
 import re
+from typing import Dict, List, Tuple, Set
+
+import requests
 from Crypto.Hash import keccak
 
 try:
@@ -15,74 +13,6 @@ except ImportError:
 import logging
 
 logger = logging.getLogger(__name__)
-
-def run_synchrony(js_code: str, timeout: int = 10) -> str:
-    """
-    Executes Synchrony CLI to debofuscate JavaScript code
-    """
-    tmp_in_path = None
-    tmp_out_path = None
-
-    try:
-        # Create temporary files for input and output
-        with tempfile.NamedTemporaryFile(mode='w+', suffix='.js', delete=False, encoding='utf-8') as tmp_in:
-            tmp_in.write(js_code)
-            tmp_in_path = tmp_in.name
-
-        with tempfile.NamedTemporaryFile(mode='w+', suffix='.js', delete=False, encoding='utf-8') as tmp_out:
-            tmp_out_path = tmp_out.name
-
-        # Execute synchrony specifying input and output flags
-        # Synchrony syntax: synchrony deobfuscate input.js -o output.js
-        cmd = ['synchrony', 'deobfuscate', tmp_in_path, '-o', tmp_out_path]
-
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout
-        )
-
-        # Read the clean deobfuscated JS from the output file
-        if os.path.exists(tmp_out_path) and os.path.getsize(tmp_out_path) > 0:
-            with open(tmp_out_path, 'r', encoding='utf-8') as f:
-                deobfuscated_code = f.read().strip()
-
-            if deobfuscated_code:
-                logger.info("Successfully deobfuscated JS payload using Synchrony.")
-                return deobfuscated_code
-
-        logger.warning(f"Synchrony did not write output code. Stderr: {result.stderr.strip()}")
-
-    except subprocess.TimeoutExpired:
-        logger.error(f"Synchrony execution timed out after {timeout} seconds.")
-    except FileNotFoundError:
-        logger.error("Synchrony executable not found! Ensure 'npm install -g deobfuscator' is installed.")
-    except Exception as e:
-        logger.error(f"Unexpected error running Synchrony: {e}")
-    finally:
-        # Cleanup temporary files
-        for path in (tmp_in_path, tmp_out_path):
-            if path and os.path.exists(path):
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
-
-    return js_code
-
-def smart_deobfuscate(script_content: str) -> str:
-    """
-    Tiered Deobfuscator Pipeline:
-    1. Checks if script is heavily obfuscated using fast regex heuristics.
-    2. If YES -> passes to webcrack for full unrolling.
-    3. If NO  -> skips heavy subprocess and returns raw script immediately.
-    """
-    logger.info("Detected JS-Obfuscator signature. Triggering webcrack pipeline...")
-    deobfuscated_script = run_synchrony(script_content, timeout=5)
-    with open("deobfuscated_sample.js", "w", encoding="utf-8") as f:
-        f.write(deobfuscated_script)
-    return deobfuscated_script
 
 def extract_valid_smart_contract(text) -> str | None:
     pattern = r"0x[a-fA-F0-9]{40}"
