@@ -39,14 +39,6 @@ from urllib.parse import urlparse
 import requests
 from dotenv import load_dotenv
 
-# try:
-#     from . import extractors
-#     from .models import (
-#         ClickGrabConfig, AnalysisResult, AnalysisReport,
-#         AnalysisVerdict, ReportFormat, CommandRiskLevel, JavaScriptRedirectChain
-#     )
-#     from .redirect_follower import collect_redirects
-# except ImportError:
 import extractors
 from models import (
     ClickGrabConfig, AnalysisResult, AnalysisReport,
