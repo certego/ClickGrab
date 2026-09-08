@@ -8,12 +8,12 @@ from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup
 
-try:
-    from . import extractors
-    from .models import RedirectFollow
-except ImportError:
-    import extractors
-    from models import RedirectFollow
+# try:
+#     from . import extractors
+#     from .models import RedirectFollow
+# except ImportError:
+import extractors
+from models import RedirectFollow
 
 logger = logging.getLogger("clickgrab.redirects")
 
