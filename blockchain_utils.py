@@ -7,10 +7,7 @@ import subprocess
 import requests
 from Crypto.Hash import keccak
 
-try:
-    from .models import CommonPatterns
-except ImportError:
-    from models import CommonPatterns
+from models import CommonPatterns
 
 import logging
 

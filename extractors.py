@@ -12,52 +12,29 @@ except ImportError:
     from enum import Enum
     class StrEnum(str, Enum):
         pass
-try:
-    from .models import (
-        Base64Result,
-        PowerShellDownload,
-        SuspiciousCommand,
-        EncodedPowerShellResult,
-        CommandType,
-        CommandRiskLevel,
-        CommonPatterns,
-        EtherhidingResult,
-        Base64XoredJavaScriptResult,
+
+from models import (
+    Base64Result,
+    PowerShellDownload,
+    SuspiciousCommand,
+    EncodedPowerShellResult,
+    CommandType,
+    CommandRiskLevel,
+    CommonPatterns,
+    EtherhidingResult,
+    Base64XoredJavaScriptResult,
 )
-    from .blockchain_utils import (
-        extract_etherhiding_js_patterns,
-        fetch_payload,
-        decode_payload,
-        extract_valid_smart_contract,
-        extract_function_selectors,
-        pick_correct_selector,
-        extract_malicious_url_and_check_next_stage,
-        deobfuscate_obfuscator_io_with_webcrack,
-        extract_obfuscator_io_js,
+from blockchain_utils import (
+    extract_etherhiding_js_patterns,
+    fetch_payload,
+    decode_payload,
+    extract_valid_smart_contract,
+    extract_function_selectors,
+    pick_correct_selector,
+    extract_malicious_url_and_check_next_stage,
+    deobfuscate_obfuscator_io_with_webcrack,
+    extract_obfuscator_io_js,
 )
-except ImportError:
-    from models import (
-        Base64Result,
-        PowerShellDownload,
-        SuspiciousCommand,
-        EncodedPowerShellResult,
-        CommandType,
-        CommandRiskLevel,
-        CommonPatterns,
-        EtherhidingResult,
-        Base64XoredJavaScriptResult,
-    )
-    from blockchain_utils import (
-        extract_etherhiding_js_patterns,
-        fetch_payload,
-        decode_payload,
-        extract_valid_smart_contract,
-        extract_function_selectors,
-        pick_correct_selector,
-        extract_malicious_url_and_check_next_stage,
-        deobfuscate_obfuscator_io_with_webcrack,
-        extract_obfuscator_io_js,
-    )
 
 import logging
 

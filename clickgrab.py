@@ -39,20 +39,12 @@ from urllib.parse import urlparse
 import requests
 from dotenv import load_dotenv
 
-try:
-    from . import extractors
-    from .models import (
-        ClickGrabConfig, AnalysisResult, AnalysisReport,
-        AnalysisVerdict, ReportFormat, CommandRiskLevel, JavaScriptRedirectChain
-    )
-    from .redirect_follower import collect_redirects
-except ImportError:
-    import extractors
-    from models import (
-        ClickGrabConfig, AnalysisResult, AnalysisReport,
-        AnalysisVerdict, ReportFormat, CommandRiskLevel, JavaScriptRedirectChain
-    )
-    from redirect_follower import collect_redirects
+import extractors
+from models import (
+    ClickGrabConfig, AnalysisResult, AnalysisReport,
+    AnalysisVerdict, ReportFormat, CommandRiskLevel, JavaScriptRedirectChain
+)
+from redirect_follower import collect_redirects
 
 DEFAULT_CLICKFIX_GIST_ID = "9f563dfb78a06fad5db794f33ba93a3f"
 DEFAULT_CLICKFIX_GIST_FILENAME = "clickfix_domains.txt"
