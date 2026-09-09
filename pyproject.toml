@@ -16,4 +16,7 @@ clickgrab = "clickgrab:main"
 dependencies = { file = ["requirements.txt"] }
 
 [tool.setuptools]
-py-modules = ["clickgrab", "extractors", "models", "blockchain_utils", "redirect_follower"] # Top-level Python files
+packages = ["clickgrab"]
+
+[tool.setuptools.package-dir]
+clickgrab = "."
