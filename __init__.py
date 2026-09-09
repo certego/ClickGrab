@@ -1,4 +1,7 @@
 # __init__.py
-from .clickgrab import analyze_url, main
+import sys
+import os
 
-__all__ = ["analyze_url", "main"]
+_pkg_dir = os.path.dirname(os.path.abspath(__file__))
+if _pkg_dir not in sys.path:
+    sys.path.insert(0, _pkg_dir)

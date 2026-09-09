@@ -10,7 +10,7 @@ readme = "README.md"
 dynamic = ["dependencies"]
 
 [project.scripts]
-clickgrab = "clickgrab:main"
+clickgrab = "clickgrab.clickgrab:main"
 
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }
