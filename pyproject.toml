@@ -10,10 +10,13 @@ readme = "README.md"
 dynamic = ["dependencies"]
 
 [project.scripts]
-clickgrab = "clickgrab:main"
+clickgrab = "clickgrab.clickgrab:main"
 
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }
 
 [tool.setuptools]
-py-modules = ["clickgrab", "extractors", "models", "blockchain_utils", "redirect_follower"] # Top-level Python files
+packages = ["clickgrab"]
+
+[tool.setuptools.package-dir]
+clickgrab = "."
