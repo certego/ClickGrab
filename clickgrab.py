@@ -151,12 +151,18 @@ def _read_text_capped(response, max_bytes: int = 3_000_000, deadline: Optional[f
         return raw.decode("utf-8", errors="ignore")
 
 
-def get_html_content(url: str, proxies: Dict[str, str] | None, max_redirects: int = 2) -> Optional[str]:
+def get_html_content(
+    url: str,
+    proxies: Dict[str, str] | None,
+    max_redirects: int = 2,
+    headers: Dict[str, str] | None = None,
+) -> Optional[str]:
     """Fetch HTML content from a URL.
     
     Args:
         url: The URL to fetch content from
         max_redirects: Maximum number of redirects to follow
+        headers: Optional headers merged over the defaults; overriding User-Agent drops the Sec-CH-UA* hints
         
     Returns:
         str: HTML content if successful, None otherwise
@@ -174,7 +180,7 @@ def get_html_content(url: str, proxies: Dict[str, str] | None, max_redirects: in
         if any(cdn in parsed_url.netloc.lower() for cdn in suspicious_cdns):
             logger.warning(f"URL {url} is from a CDN known to host malware. Proceeding with analysis...")
 
-        headers = {
+        default_headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9',
@@ -187,6 +193,10 @@ def get_html_content(url: str, proxies: Dict[str, str] | None, max_redirects: in
             'Sec-Fetch-User': '?1',
             'Upgrade-Insecure-Requests': '1',
         }
+        if headers and 'User-Agent' in headers:
+            # Sec-CH-UA* describe the default Windows Chrome and would contradict another UA
+            default_headers = {k: v for k, v in default_headers.items() if not k.lower().startswith('sec-ch-ua')}
+        headers = {**default_headers, **(headers or {})}
         
         # Create a session to handle redirects
         import time as _time
@@ -768,11 +778,16 @@ def fetch_and_analyze_external_js(base_url: str, html_content: str, proxies) -> 
     return results
 
 
-def analyze_url(url: str, proxies: Dict[str, str] | None = None) -> Optional[AnalysisResult]:
+def analyze_url(
+    url: str,
+    proxies: Dict[str, str] | None = None,
+    headers: Dict[str, str] | None = None,
+) -> Optional[AnalysisResult]:
     """Analyze a URL for malicious content and return results as a Pydantic model.
     
     Args:
         url: The URL to analyze
+        headers: Optional request headers merged over the defaults (e.g. a custom User-Agent)
         
     Returns:
         Optional[AnalysisResult]: Analysis results if successful, None otherwise
@@ -793,7 +808,7 @@ def analyze_url(url: str, proxies: Dict[str, str] | None = None) -> Optional[Ana
     )
 
     # Get HTML content
-    html_content = get_html_content(url, proxies=proxies)
+    html_content = get_html_content(url, proxies=proxies, headers=headers)
     if not html_content:
         logger.error(f"Failed to retrieve content from {url}")
         # Still return a result with empty content and failed status
